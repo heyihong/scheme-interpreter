@@ -1,27 +1,50 @@
 module Eval  
     ( eval
+    , primitives
     ) where
 
 import Core
 import Control.Monad.Except
 
-eval :: LispVal -> ThrowsError LispVal
-eval val@(String _) = return val
-eval val@(Number _) = return val
-eval val@(Bool _) = return val
-eval (List [Atom "quote", val]) = return val
-eval (List [Atom "if", pred, conseq, alt]) =
-	do result <- eval pred
-	   case result of 
-	   		Bool False -> eval alt
-	   		otherwise -> eval conseq
-eval (List (Atom func : args)) = (mapM eval args) >>= (apply func)
-eval badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+makeFunc varargs env params body = return $ Func (map showVal params) varargs body env
+makeNormalFunc = makeFunc Nothing
+makeVarArgs varargs = makeFunc (Just (showVal varargs))
 
-apply :: String -> [LispVal] -> ThrowsError LispVal
-apply func args = maybe (throwError $ NotFunction "Unrecognized primitive function args" func)
-						($ args) 
-						(lookup func primitives)
+eval :: Env -> LispVal -> IOThrowsError LispVal
+eval _ val@(String _) = return val
+eval _ val@(Number _) = return val
+eval _ val@(Bool _) = return val
+eval env (Atom str) = getVar env str
+eval _ (List [Atom "quote", val]) = return val
+eval env (List [Atom "set!", Atom var, expr]) = eval env expr >>= setVar env var
+eval env (List [Atom "define", Atom var, expr]) = eval env expr >>= defineVar env var
+eval env (List ((Atom "define"):List (Atom funcName : params):body)) = makeNormalFunc env params body >>= defineVar env funcName
+eval env (List ((Atom "define"):DottedList (Atom funcName : params) varargs:body)) = makeVarArgs varargs env params body >>= defineVar env funcName
+eval env (List ((Atom "lambda"):(List params):body)) = makeNormalFunc env params body
+eval env (List [Atom "if", pred, conseq, alt]) =
+	do result <- eval env pred
+	   case result of 
+	   		Bool True 	-> eval env conseq
+	   		Bool False 	-> eval env alt
+	   		_ 			-> throwError $ TypeMismatch "boolean" result
+eval env (List (Atom funcName : args)) = do
+	func <- getVar env funcName
+	argVals <- mapM (eval env) args
+	apply func argVals
+
+eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+
+apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
+apply (PrimitiveFunc func) args = liftThrows $ func args
+apply (Func params varargs body closure) args =
+      if length params > length args || length params /= length args && varargs == Nothing
+         then throwError $ NumArgs (toInteger $ length params) args
+         else (liftIO $ bindVars closure $ zip params args) >>= bindVarArgs varargs >>= evalBody
+      where remainingArgs = drop (length params) args
+            evalBody env = liftM last $ mapM (eval env) body
+            bindVarArgs arg env = case arg of
+                Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
+                Nothing -> return env
 
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives = [("+", numericBinop (+)),
@@ -50,7 +73,9 @@ primitives = [("+", numericBinop (+)),
               ("number?", isNumber),
               ("car", car),
               ("cdr", cdr),
-              ("cons", cons)]
+              ("cons", cons),
+              ("eqv?", eqv),
+              ("eq?", eqv)]
 
 numericBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
 numericBinop op [] = throwError $ NumArgs 2 []
@@ -93,7 +118,7 @@ cdr :: [LispVal] -> ThrowsError LispVal
 cdr [List (x : xs)] 		= return $ List xs
 cdr [DottedList [_] x] 		= return x
 cdr [DottedList (_ : xs) x] = return $ DottedList xs x
-cdr [badArgs]				= throwError $ TypeMismatch "pair" badArgs
+cdr [badArg]				= throwError $ TypeMismatch "pair" badArg
 cdr badArgList              = throwError $ NumArgs 1 badArgList
 
 cons :: [LispVal] -> ThrowsError LispVal
@@ -101,6 +126,19 @@ cons [x, List xs] 				= return $ List (x:xs)
 cons [x, DottedList xs xlast]	= return $ DottedList (x:xs) xlast
 cons [x1, x2]					= return $ DottedList [x1] x2
 cons badArgList              	= throwError $ NumArgs 1 badArgList
+
+eqv :: [LispVal] -> ThrowsError LispVal
+eqv [Bool arg1, Bool arg2] 		= return $ Bool $ arg1 == arg2
+eqv [Number arg1, Number arg2] 	= return $ Bool $ arg1 == arg2
+eqv [Atom arg1, Atom arg2]		= return $ Bool $ arg1 == arg2
+eqv [String arg1, String arg2]	= return $ Bool $ arg1 == arg2
+eqv [List arg1, List arg2]		= return $ Bool $ length arg1 == length arg2 
+								&& (all eqvPair $ zip arg1 arg2)
+	where eqvPair (x1, x2) 		= case eqv [x1, x2] of
+									Left err -> False
+									Right (Bool val) -> val
+eqv [_, _]						= return $ Bool $ False
+eqv badArgList              	= throwError $ NumArgs 1 badArgList
 
 unpackNum :: LispVal -> ThrowsError Integer
 unpackNum (Number n) = return n

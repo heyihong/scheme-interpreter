@@ -1,5 +1,5 @@
 module Core  
-  ( LispVal(Atom, List, DottedList, Number, String, Bool, PrimitiveFunc, Func)
+  ( LispVal(Atom, List, DottedList, Number, String, Bool, PrimitiveFunc, Func, IOFunc, Port)
     ,unwordsList
     ,LispError(NumArgs, TypeMismatch, Parser, BadSpecialForm, NotFunction, UnboundVar, Default) 
     ,ThrowsError
@@ -18,6 +18,7 @@ module Core
     ,bindVars
   ) where
 
+import System.IO
 import Data.IORef
 import Control.Monad.Error
 import Text.ParserCombinators.Parsec 
@@ -31,6 +32,8 @@ data LispVal = Atom String
              | PrimitiveFunc ([LispVal] -> ThrowsError LispVal)
              | Func { params :: [String], vararg :: (Maybe String),
                       body :: [LispVal], closure :: Env}
+             | IOFunc ([LispVal] -> IOThrowsError LispVal)
+             | Port Handle
 
 showVal :: LispVal -> String
 showVal (String contents) = "\"" ++ contents ++ "\""
@@ -46,6 +49,8 @@ showVal (Func { params = args, vararg = varargs, body = body, closure = env}) =
       (case varargs of
          Nothing -> ""
          Just arg -> " . " ++ arg) ++ ") ...)"
+showVal (Port _) = "<IO port>"
+showVal (IOFunc _) = "<IO primitive>"
 
 unwordsList :: [LispVal] -> String
 unwordsList = unwords . map showVal

@@ -15,8 +15,8 @@ readPrompt :: String -> IO String
 readPrompt str = flushStr str >> getLine
 
 primitiveBindings :: IO Env
-primitiveBindings = nullEnv >>= flip bindVars (map makePrimitiveFunc primitives)
-	where makePrimitiveFunc (var, func) = (var, PrimitiveFunc func)
+primitiveBindings = nullEnv >>= flip bindVars (map (makeFunc PrimitiveFunc) primitives ++ map (makeFunc IOFunc) ioPrimitives)
+	where makeFunc ctr (var, func) = (var, ctr func)
 
 evalAndPrint :: Env -> String -> IO ()
 evalAndPrint env expr =  evalString env expr >>= putStrLn
@@ -31,8 +31,10 @@ until_ pred prompt action = do
       then return ()
       else action result >> until_ pred prompt action
 
-runOne :: String -> IO ()
-runOne expr = primitiveBindings >>= flip evalAndPrint expr
+runOne :: [String] -> IO ()
+runOne (filename:args) = do
+	env <- primitiveBindings >>= flip bindVars [("args", List $ map String args)]
+	(runIOThrows $ liftM show $ eval env (List [Atom "load", String filename])) >>= hPutStrLn stderr
 
 runRepl :: IO ()
 runRepl = primitiveBindings >>= until_ (== "quit") (readPrompt "Lisp>>> ") . evalAndPrint
@@ -40,8 +42,5 @@ runRepl = primitiveBindings >>= until_ (== "quit") (readPrompt "Lisp>>> ") . eva
 main :: IO ()
 main = do
 	args <- getArgs
-	case length args of 
-		0 -> runRepl
-		1 -> runOne $ args !! 0
-		otherwise -> putStrLn "Program takes only 0 or 1 argument"
+	if null args then runRepl else runOne args
 
